@@ -193,6 +193,28 @@ Place the following into `TSwapPool.t.sol`.
 -        }
 ```
 
+### [H-6] Lack of MEV protection allows sandwich and frontrunning attacks on critical functions
+**Description:** Core protocol functions like `TSwapPool::deposit()`, `TSwapPool::swapExactInput()`, and `TSwapPool::swapExactOutput()` lack adequate MEV protection mechanisms such as slippage limits, deadlines, or minimum/maximum bounds. Combined with public mempool exposure, this allows malicious actors (searchers) to perform frontrunning or sandwich attacks to extract value from unsuspecting users.
+
+For example, a user intending to perform a large swap or deposit might have their transaction frontrun by an attacker who manipulates token prices via a flash loan or small swap, only to reverse it post-user-transaction to profit at the user’s expense.
+
+**Impact:**
+- Deposits without enforced deadlines or oracle anchoring can result in unfavorable pool share prices.
+- Swaps without min/max constraints allow attackers to sandwich user trades and extract slippage as profit.
+- Users suffer economic losses while malicious actors profit at their expense.
+
+**Proof of Concept:**
+1. A user attempts to swap 10,000 USDC for WETH with no slippage protection or max input.
+2. MEV bot sees the transaction in mempool and frontruns it with a swap that increases WETH price.
+3. User gets much less WETH than expected.
+4. MEV bot completes sandwich by reverting its price impact, profiting on both sides.
+
+**Recommended Mitigation:**
+1. Always enforce a deadline parameter and revert if it has passed.
+2. Include minOutputAmount or maxInputAmount parameters for all swap-related functions.
+3. Consider supporting off-chain signatures or private transactions via relayers to avoid mempool exposure.
+4. Investigate integrating anti-MEV protections such as Flashbots bundles or frequent batch auctions.
+
 ## Low
 
 ### [L-1] `TSwapPool::LiquidityAdded` event has parameters out of order 
