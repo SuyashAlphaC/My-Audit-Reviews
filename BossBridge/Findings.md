@@ -157,7 +157,18 @@ Consider disallowing attacker-controlled external calls to sensitive components 
 ### [H-5] `CREATE` opcode does not work on zksync era
 
 ### [H-6] `L1BossBridge::depositTokensToL2`'s `DEPOSIT_LIMIT` check allows contract to be DoS'd
-*Not shown in video*
+
+The `L1BossBridge::depositTokensToL2()` function enforces a fixed upper limit on the total amount of tokens allowed in the bridge's vault:
+
+```javascript
+if (token.balanceOf(address(vault)) + amount > DEPOSIT_LIMIT) {
+    revert L1BossBridge__DepositLimitReached();
+}
+```
+
+This check is used to ensure that the vault does not exceed a pre-defined threshold of tokens. While the intent is likely to limit risk exposure, this design can cause the entire bridge to become unusable for deposits once the limit is reached.
+Since the `DEPOSIT_LIMIT` is a hard cap, once the total balance in the vault meets or exceeds it—even temporarily—no further deposits are possible, potentially locking the bridge for all users.
+
 
 ### [H-7] The `L1BossBridge::withdrawTokensToL1` function has no validation on the withdrawal amount being the same as the deposited amount in `L1BossBridge::depositTokensToL2`, allowing attacker to withdraw more funds than deposited 
 
