@@ -2,7 +2,7 @@
 
 ## High 
 
-### [H-1] Users who give tokens approvals to `L1BossBridge` may have those assest stolen
+### [H-1] Users who give tokens approvals to `L1BossBridge` may have those assets stolen
 
 The `depositTokensToL2` function allows anyone to call it with a `from` address of any account that has approved tokens to the bridge.
 
@@ -163,9 +163,68 @@ Consider disallowing attacker-controlled external calls to sensitive components 
 *Not shown in video*
 
 ### [H-8] `TokenFactory::deployToken` locks tokens forever 
-*Not shown in video*
+**Description:** The TokenFactory contract uses inline assembly with the low-level create opcode to deploy new ERC20 tokens from raw bytecode. However, the deployment process lacks validation checks, such as confirming whether the contract was successfully deployed or ensuring the contract adheres to the ERC20 standard. Additionally, if the constructor of the deployed contract mints tokens to the TokenFactory contract itself (i.e., address(this)), and the factory does not provide any mechanism to withdraw those tokens, they become permanently inaccessible, effectively locked forever.
 
+This issue is especially critical when deploying on chains like zkSync Era, where the use of low-level create can be problematic or unsupported, further increasing the likelihood of silent failures.
 
+**Impact:**
+1. If deployment fails, the function stores a zero address in the symbol mapping, resulting in future interaction failures.
+2. Tokens minted to the TokenFactory contract will be inaccessible forever, as the contract does not include a withdrawal mechanism.
+3. The symbol-to-address mapping can be poisoned by failed or invalid deployments, making those symbols unusable or misleading.
+4. On zkSync Era, inline assembly using create may fail silently or behave unexpectedly, worsening the issue.
+
+**Proof Of Concept:** 
+Given the original `TokenFactory.sol` code : 
+```javascript
+function deployToken(string memory symbol, bytes memory contractBytecode) public onlyOwner returns (address addr) {
+    assembly {
+        addr := create(0, add(contractBytecode, 0x20), mload(contractBytecode))
+    }
+    s_tokenToAddress[symbol] = addr;
+    emit TokenDeployed(symbol, addr);
+}
+```
+1. Deployment fails 
+If `create()` fails, it returns `address(0)`, yet the contract still assigns it to the symbol:
+
+```javascript
+s_tokenToAddress[symbol] = addr; // addr == 0x0
+```
+
+This leads to:
+- An invalid address being used for the token.
+- Permanent pollution of the mapping.
+
+2. Locked Tokens Scenario
+Suppose the ERC20 constructor mints tokens to the deployer (address(this)):
+
+```javascript
+constructor(...) ERC20("Token", "TKN") {
+    _mint(msg.sender, 1000 * 1e18);
+}
+```
+
+Since TokenFactory is the deployer:
+It receives 1000 tokens.
+But TokenFactory has no function to transfer them out, locking them forever.
+
+**Required Mitigations:** Replace the `TokenFactory::deployToken()` function with the following code :
+
+```diff
+function deployToken(string memory symbol, bytes memory contractBytecode) public onlyOwner returns (address addr) {
+    assembly {
+        addr := create(0, add(contractBytecode, 0x20), mload(contractBytecode))
+    }
+
++   require(addr != address(0), "Token deployment failed");
+    s_tokenToAddress[symbol] = addr;
+    emit TokenDeployed(symbol, addr);
+}
+
++function rescueTokens(address token, address to, uint256 amount) external onlyOwner {
++    require(IERC20(token).transfer(to, amount), "Rescue transfer failed");
++}
+```
 ## Medium
 
 ### [M-1] Withdrawals are prone to unbounded gas consumption due to return bombs
