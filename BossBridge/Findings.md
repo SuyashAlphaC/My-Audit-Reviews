@@ -160,7 +160,69 @@ Consider disallowing attacker-controlled external calls to sensitive components 
 *Not shown in video*
 
 ### [H-7] The `L1BossBridge::withdrawTokensToL1` function has no validation on the withdrawal amount being the same as the deposited amount in `L1BossBridge::depositTokensToL2`, allowing attacker to withdraw more funds than deposited 
-*Not shown in video*
+
+**Description:** The withdrawTokensToL1 function allows users to withdraw tokens from the vault based on a signed message from a trusted off-chain signer. However, the contract does not perform any internal validation to ensure that the amount being withdrawn matches the amount previously deposited by the user in depositTokensToL2.
+Since the system relies on events and off-chain monitoring to mint tokens on L2 and sign withdrawals on L1, a malicious or compromised off-chain actor (or a replayed signature) can enable over-withdrawal from the vault, potentially draining all funds.
+
+**Impact:** 
+- Critical fund loss risk due to unvalidated or improperly tracked withdrawal requests.
+- A user can withdraw more tokens than they deposited on L1.
+- Since no on-chain accounting (like a mapping of user balances) is used, there's no limit or sanity check against over-withdrawal or replay of stale/fake deposits.
+- If the off-chain signer is compromised or malfunctions, an attacker can drain the vault without ever depositing legitimate tokens.
+
+**Proof Of Concept:** Add the following lines to the test file :
+```javascript
+
+    function testCanDrainMoreFunds() public {
+        uint256 amount = 1000 ether;
+
+        uint256 vaultInitialBalance = 1000e18;
+        uint256 attackerInitialBalance = 100e18;
+        address attacker = makeAddr("attacker");
+        deal(address(token), address(vault), vaultInitialBalance);
+        deal(address(token), address(attacker), attackerInitialBalance);
+        vm.startPrank(attacker);
+        token.approve(address(tokenBridge), type(uint256).max);
+        vm.expectEmit(address(tokenBridge));
+        emit Deposit(attacker, attacker, attackerInitialBalance);
+        tokenBridge.depositTokensToL2(attacker, attacker, attackerInitialBalance);
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(operator.key, MessageHashUtils.toEthSignedMessageHash(keccak256(abi.encode(address(token), 0, abi.encodeCall(IERC20.transferFrom, (address(vault), attacker, amount))))));
+        tokenBridge.withdrawTokensToL1(attacker, amount, v, r, s);
+
+        assertEq(token.balanceOf(address(vault)), vaultInitialBalance - amount);    
+        assertEq(token.balanceOf(address(attacker)), attackerInitialBalance + amount);
+        vm.stopPrank();
+    }
+```
+**Required Mitigations:** 
+Track deposits per user and then validate the requested amount in the withdraw function as :
+
+```diff
++ mapping(address => uint256) private s_userDeposits;
+
+function depositTokensToL2(address from, address l2Recipient, uint256 amount) external whenNotPaused {
+    ...
++   s_userDeposits[from] += amount;
+    emit Deposit(from, l2Recipient, amount);
+}
+
+function withdrawTokensToL1(address to, uint256 amount, uint8 v, bytes32 r, bytes32 s) external {
++   require(s_userDeposits[to] >= amount, "Over-withdrawal attempt");
++   s_userDeposits[to] -= amount;
+
+    sendToL1(
+        v,
+        r,
+        s,
+        abi.encode(
+            address(token),
+            0,
+            abi.encodeCall(IERC20.transferFrom, (address(vault), to, amount))
+        )
+    );
+}
+```
 
 ### [H-8] `TokenFactory::deployToken` locks tokens forever 
 **Description:** The TokenFactory contract uses inline assembly with the low-level create opcode to deploy new ERC20 tokens from raw bytecode. However, the deployment process lacks validation checks, such as confirming whether the contract was successfully deployed or ensuring the contract adheres to the ERC20 standard. Additionally, if the constructor of the deployed contract mints tokens to the TokenFactory contract itself (i.e., address(this)), and the factory does not provide any mechanism to withdraw those tokens, they become permanently inaccessible, effectively locked forever.
